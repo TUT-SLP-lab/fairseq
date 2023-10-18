@@ -14,6 +14,8 @@ from fairseq.modules.fairseq_dropout import FairseqDropout
 from fairseq.modules.quant_noise import quant_noise
 from torch import Tensor, nn
 from torch.nn import Parameter
+import loralib as lora
+import logging
 
 
 @with_incremental_state
@@ -37,6 +39,7 @@ class MultiheadAttention(nn.Module):
         encoder_decoder_attention=False,
         q_noise=0.0,
         qn_block_size=8,
+        use_lora=False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -53,7 +56,7 @@ class MultiheadAttention(nn.Module):
         assert (
             self.head_dim * num_heads == self.embed_dim
         ), "embed_dim must be divisible by num_heads"
-        self.scaling = self.head_dim ** -0.5
+        self.scaling = self.head_dim**-0.5
 
         self.self_attention = self_attention
         self.encoder_decoder_attention = encoder_decoder_attention
@@ -61,20 +64,34 @@ class MultiheadAttention(nn.Module):
         assert not self.self_attention or self.qkv_same_dim, (
             "Self-attention requires query, key and " "value to be of the same size"
         )
-
-        self.k_proj = quant_noise(
-            nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size
-        )
-        self.v_proj = quant_noise(
-            nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size
-        )
-        self.q_proj = quant_noise(
-            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
-        )
-
-        self.out_proj = quant_noise(
-            nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
-        )
+        if use_lora:
+            logging.info("Apply Lora to multi head attention")
+            # reference : https://github.com/declare-lab/speech-adapters/blob/main/modeling_wav2vec2.py
+            self.k_proj = quant_noise(
+                lora.Linear(self.kdim, embed_dim, r=8), q_noise, qn_block_size
+            )
+            self.v_proj = quant_noise(
+                lora.Linear(self.vdim, embed_dim, r=8), q_noise, qn_block_size
+            )
+            self.q_proj = quant_noise(
+                lora.Linear(embed_dim, embed_dim, r=8), q_noise, qn_block_size
+            )
+            self.out_proj = quant_noise(
+                lora.Linear(embed_dim, embed_dim, r=8), q_noise, qn_block_size
+            )
+        else:
+            self.k_proj = quant_noise(
+                nn.Linear(self.kdim, embed_dim, bias=bias), q_noise, qn_block_size
+            )
+            self.v_proj = quant_noise(
+                nn.Linear(self.vdim, embed_dim, bias=bias), q_noise, qn_block_size
+            )
+            self.q_proj = quant_noise(
+                nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+            )
+            self.out_proj = quant_noise(
+                nn.Linear(embed_dim, embed_dim, bias=bias), q_noise, qn_block_size
+            )
 
         if add_bias_kv:
             self.bias_k = Parameter(torch.Tensor(1, 1, embed_dim))

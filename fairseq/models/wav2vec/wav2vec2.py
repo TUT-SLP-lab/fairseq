@@ -28,6 +28,8 @@ from fairseq.modules import (
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.utils import buffered_arange, index_put, is_xla_tensor
 
+import loralib as lora
+import logging
 
 EXTRACTOR_MODE_CHOICES = ChoiceEnum(["default", "layer_norm"])
 MASKING_DISTRIBUTION_CHOICES = ChoiceEnum(["static", "uniform", "normal", "poisson"])
@@ -228,6 +230,10 @@ class Wav2Vec2Config(FairseqDataclass):
             "can be tuple of 3 values (start, end, decay)"
         },
     )
+    use_lora: bool = field(
+        default=False,
+        metadata={"help": "use lora"},
+    )
 
 
 @register_model("wav2vec2", dataclass=Wav2Vec2Config)
@@ -415,7 +421,6 @@ class Wav2Vec2Model(BaseFairseqModel):
         return x, mask_indices
 
     def sample_negatives(self, y, num, padding_count=None):
-
         if self.n_negatives == 0 and self.cross_sample_negatives == 0:
             return y.new(0)
 
@@ -474,7 +479,6 @@ class Wav2Vec2Model(BaseFairseqModel):
         return negs, neg_idxs
 
     def compute_preds(self, x, y, negatives):
-
         neg_is_pos = (y == negatives).all(-1)
         y = y.unsqueeze(0)
         targets = torch.cat([y, negatives], dim=0)
@@ -484,7 +488,7 @@ class Wav2Vec2Model(BaseFairseqModel):
         logits = logits / self.logit_temp
 
         if is_xla_tensor(logits) or neg_is_pos.any():
-            fillval = -float(2 ** 30)
+            fillval = -float(2**30)
             if not hasattr(self, "_inftensor"):
                 self._inftensor = (
                     torch.tensor(fillval).to(x.device)
@@ -523,7 +527,6 @@ class Wav2Vec2Model(BaseFairseqModel):
         mask_channel_indices=None,
         padding_count=None,
     ):
-
         if self.feature_grad_mult > 0:
             features = self.feature_extractor(source)
             if self.feature_grad_mult != 1.0:
@@ -804,7 +807,6 @@ class ConvFeatureExtractionModel(nn.Module):
             in_d = dim
 
     def forward(self, x):
-
         # BxT -> BxCxT
         x = x.unsqueeze(1)
 
@@ -815,7 +817,7 @@ class ConvFeatureExtractionModel(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args: Wav2Vec2Config):
         super().__init__()
 
         self.dropout = args.dropout
@@ -835,7 +837,6 @@ class TransformerEncoder(nn.Module):
 
         self.pos_conv = nn.utils.weight_norm(self.pos_conv, name="weight", dim=2)
         self.pos_conv = nn.Sequential(self.pos_conv, SamePad(args.conv_pos), nn.GELU())
-
         self.layers = nn.ModuleList(
             [
                 TransformerSentenceEncoderLayer(
@@ -847,6 +848,7 @@ class TransformerEncoder(nn.Module):
                     activation_dropout=args.activation_dropout,
                     activation_fn=args.activation_fn,
                     layer_norm_first=args.layer_norm_first,
+                    use_lora=args.use_lora,
                 )
                 for _ in range(args.encoder_layers)
             ]
@@ -867,7 +869,6 @@ class TransformerEncoder(nn.Module):
         return x, layer_results
 
     def extract_features(self, x, padding_mask=None, tgt_layer=None):
-
         if padding_mask is not None:
             x = index_put(x, padding_mask, 0)
 
@@ -928,8 +929,8 @@ class TransformerSentenceEncoderLayer(nn.Module):
         activation_dropout: float = 0.1,
         activation_fn: str = "relu",
         layer_norm_first: bool = False,
+        use_lora: bool = False,
     ) -> None:
-
         super().__init__()
         # Initialize parameters
         self.embedding_dim = embedding_dim
@@ -943,6 +944,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
             num_attention_heads,
             dropout=attention_dropout,
             self_attention=True,
+            use_lora=use_lora,
         )
 
         self.dropout1 = nn.Dropout(dropout)
@@ -953,8 +955,14 @@ class TransformerSentenceEncoderLayer(nn.Module):
 
         # layer norm associated with the self attention layer
         self.self_attn_layer_norm = LayerNorm(self.embedding_dim)
-        self.fc1 = nn.Linear(self.embedding_dim, ffn_embedding_dim)
-        self.fc2 = nn.Linear(ffn_embedding_dim, self.embedding_dim)
+        if use_lora:
+            # reference: https://github.com/declare-lab/speech-adapters/blob/main/modeling_wav2vec2.py
+            logging.info("use Lora as adapter")
+            self.fc1 = lora.Linear(self.embedding_dim, ffn_embedding_dim, r=8)
+            self.fc2 = lora.Linear(ffn_embedding_dim, self.embedding_dim, r=8)
+        else:
+            self.fc1 = nn.Linear(self.embedding_dim, ffn_embedding_dim)
+            self.fc2 = nn.Linear(ffn_embedding_dim, self.embedding_dim)
 
         # layer norm associated with the position wise feed-forward NN
         self.final_layer_norm = LayerNorm(self.embedding_dim)
