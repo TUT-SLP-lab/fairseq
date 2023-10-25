@@ -40,6 +40,7 @@ class MultiheadAttention(nn.Module):
         q_noise=0.0,
         qn_block_size=8,
         use_lora=False,
+        lora_r=8,
     ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -65,19 +66,19 @@ class MultiheadAttention(nn.Module):
             "Self-attention requires query, key and " "value to be of the same size"
         )
         if use_lora:
-            logging.info("Apply Lora to multi head attention")
+            print("Apply Lora to multi head attention")
             # reference : https://github.com/declare-lab/speech-adapters/blob/main/modeling_wav2vec2.py
             self.k_proj = quant_noise(
-                lora.Linear(self.kdim, embed_dim, r=8), q_noise, qn_block_size
+                lora.Linear(self.kdim, embed_dim, r=lora_r), q_noise, qn_block_size
             )
             self.v_proj = quant_noise(
-                lora.Linear(self.vdim, embed_dim, r=8), q_noise, qn_block_size
+                lora.Linear(self.vdim, embed_dim, r=lora_r), q_noise, qn_block_size
             )
             self.q_proj = quant_noise(
-                lora.Linear(embed_dim, embed_dim, r=8), q_noise, qn_block_size
+                lora.Linear(embed_dim, embed_dim, r=lora_r), q_noise, qn_block_size
             )
             self.out_proj = quant_noise(
-                lora.Linear(embed_dim, embed_dim, r=8), q_noise, qn_block_size
+                lora.Linear(embed_dim, embed_dim, r=lora_r), q_noise, qn_block_size
             )
         else:
             self.k_proj = quant_noise(

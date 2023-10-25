@@ -234,6 +234,10 @@ class Wav2Vec2Config(FairseqDataclass):
         default=False,
         metadata={"help": "use lora"},
     )
+    lora_r: int = field(
+        default=8,
+        metadata={"help": "lora r"},
+    )
 
 
 @register_model("wav2vec2", dataclass=Wav2Vec2Config)
@@ -241,6 +245,7 @@ class Wav2Vec2Model(BaseFairseqModel):
     def __init__(self, cfg: Wav2Vec2Config):
         super().__init__()
         self.cfg = cfg
+        print(self.cfg)
 
         feature_enc_layers = eval(cfg.conv_feature_layers)
         self.embed = feature_enc_layers[-1][0]
@@ -849,6 +854,7 @@ class TransformerEncoder(nn.Module):
                     activation_fn=args.activation_fn,
                     layer_norm_first=args.layer_norm_first,
                     use_lora=args.use_lora,
+                    lora_r=args.lora_r,
                 )
                 for _ in range(args.encoder_layers)
             ]
@@ -930,6 +936,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
         activation_fn: str = "relu",
         layer_norm_first: bool = False,
         use_lora: bool = False,
+        lora_r: int = 16,
     ) -> None:
         super().__init__()
         # Initialize parameters
@@ -945,6 +952,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
             dropout=attention_dropout,
             self_attention=True,
             use_lora=use_lora,
+            lora_r=lora_r,
         )
 
         self.dropout1 = nn.Dropout(dropout)
@@ -957,9 +965,9 @@ class TransformerSentenceEncoderLayer(nn.Module):
         self.self_attn_layer_norm = LayerNorm(self.embedding_dim)
         if use_lora:
             # reference: https://github.com/declare-lab/speech-adapters/blob/main/modeling_wav2vec2.py
-            logging.info("use Lora as adapter")
-            self.fc1 = lora.Linear(self.embedding_dim, ffn_embedding_dim, r=8)
-            self.fc2 = lora.Linear(ffn_embedding_dim, self.embedding_dim, r=8)
+            print(f"use lora : lora r is {lora_r}")
+            self.fc1 = lora.Linear(self.embedding_dim, ffn_embedding_dim, r=lora_r)
+            self.fc2 = lora.Linear(ffn_embedding_dim, self.embedding_dim, r=lora_r)
         else:
             self.fc1 = nn.Linear(self.embedding_dim, ffn_embedding_dim)
             self.fc2 = nn.Linear(ffn_embedding_dim, self.embedding_dim)
